@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "DataWallet",
+    "slug": "datawallet",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#000000"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.yourcompany.datawallet",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "DataWallet uses Face ID to protect your secured tiles and authenticate access to sensitive information.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.yourcompany.datawallet",
+      "versionCode": 1,
+      "permissions": ["USE_BIOMETRIC", "USE_FINGERPRINT"],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#000000"
+      },
+      "edgeToEdgeEnabled": true
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
