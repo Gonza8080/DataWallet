@@ -52,6 +52,7 @@ export const HomeScreen: React.FC = () => {
   
   // Clipboard prefill functionality
   const [clipboardContent, setClipboardContent] = useState<string | null>(null);
+  const dismissedClipboardContent = useRef<string | null>(null);
   
   // Track display order separately from actual tile data
   // This order is frozen while app is active and only updates after background threshold
@@ -261,18 +262,31 @@ export const HomeScreen: React.FC = () => {
     try {
       const content = await Clipboard.getStringAsync();
       
+      console.log('Checking clipboard:', {
+        hasContent: !!content,
+        contentLength: content?.length,
+        hasMatchingTile: content ? hasMatchingTile(content) : false,
+        wasDismissed: content === dismissedClipboardContent.current,
+        dismissedContent: dismissedClipboardContent.current
+      });
+      
       // Directly open tile creation modal if:
       // 1. Content is not empty
       // 2. Content is reasonable length (not too long)
       // 3. Content doesn't already exist in a tile
+      // 4. Content wasn't previously dismissed by the user
       if (
         content && 
         content.trim().length > 0 && 
         content.length < 1000 &&
-        !hasMatchingTile(content)
+        !hasMatchingTile(content) &&
+        content !== dismissedClipboardContent.current
       ) {
+        console.log('Opening dialog with clipboard content');
         setClipboardContent(content);
         setIsAddModalOpen(true);
+      } else {
+        console.log('Not opening dialog - conditions not met');
       }
     } catch (error) {
       // User denied permission or clipboard access failed
@@ -474,8 +488,9 @@ export const HomeScreen: React.FC = () => {
         setDisplayOrder(prev => [...prev, newTile.id]);
       }
       
-      // Clear clipboard content after successful creation
+      // Clear clipboard content and dismissed tracking after successful creation
       setClipboardContent(null);
+      dismissedClipboardContent.current = null;
       
       showToast('Tile created');
     }
@@ -705,6 +720,10 @@ export const HomeScreen: React.FC = () => {
       <AddTileModal
         visible={isAddModalOpen && !editingTile}
         onClose={() => {
+          // Mark clipboard content as dismissed ONLY if it was prefilled and dialog is closing without saving
+          if (clipboardContent) {
+            dismissedClipboardContent.current = clipboardContent;
+          }
           setIsAddModalOpen(false);
           setClipboardContent(null);
         }}
