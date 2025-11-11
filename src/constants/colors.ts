@@ -52,12 +52,12 @@ export const colors = {
   // Secure indicator - iOS blue
   secure: '#0A84FF',
   
-  // Search bar - slightly lighter than tile base
-  searchBar: '#3A3A3C',
+  // Search bar - blue-ish to stand out from tiles
+  searchBar: '#2A3A4D',
   
-  // Action button states
-  actionButtonActive: '#0A84FF',
-  actionButtonInactive: '#3A3A3C',
+  // Action button states (shades of red)
+  actionButtonActive: '#FF453A',
+  actionButtonInactive: '#4D2C2A',
 };
 
 
