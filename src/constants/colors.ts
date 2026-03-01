@@ -11,7 +11,7 @@ export const colors = {
   // Tile colors - dark with colored backgrounds
   tileBase: '#2C2C2E',
   tileBaseForeground: '#FFFFFF',
-  tilePressed: '#3A3A3C',
+  tilePressed: '#1A4A5A', // Teal-blue pressed state - clearly visible
   tileOpen: '#4A5A6C', // Lighter highlighted shade when content is showing
 
   // Popover
@@ -55,9 +55,12 @@ export const colors = {
   // Search bar - blue-ish to stand out from tiles
   searchBar: '#2A3A4D',
   
-  // Action button states (shades of red)
-  actionButtonActive: '#FF453A',
-  actionButtonInactive: '#4D2C2A',
+  // Action button states (blue active, faded inactive)
+  actionButtonActive: '#0A84FF', // iOS blue
+  actionButtonInactive: '#1C2833', // Dark blue-gray
+  
+  // Error/warning
+  error: '#FF453A',
 };
 
 

@@ -1,30 +1,33 @@
 {
   "expo": {
-    "name": "DataWallet",
-    "slug": "datawallet",
+    "name": "Nuggio",
+    "slug": "nuggio",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/splash.png",
       "resizeMode": "contain",
       "backgroundColor": "#000000"
     },
     "ios": {
-      "supportsTablet": true,
-      "bundleIdentifier": "com.yourcompany.datawallet",
+      "supportsTablet": false,
+      "bundleIdentifier": "com.nuggio.app",
       "buildNumber": "1",
       "infoPlist": {
-        "NSFaceIDUsageDescription": "DataWallet uses Face ID to protect your secured tiles and authenticate access to sensitive information.",
+        "NSFaceIDUsageDescription": "Nuggio uses Face ID to protect your secured nuggets and authenticate access to sensitive information.",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
-      "package": "com.yourcompany.datawallet",
+      "package": "com.nuggio.app",
       "versionCode": 1,
-      "permissions": ["USE_BIOMETRIC", "USE_FINGERPRINT"],
+      "permissions": [
+        "USE_BIOMETRIC",
+        "USE_FINGERPRINT"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#000000"
@@ -33,6 +36,15 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-secure-store"
+    ],
+    "owner": "yche8888",
+    "extra": {
+      "eas": {
+        "projectId": "d7279dcf-9ab3-4fec-ac79-0e5c2a7c8012"
+      }
     }
   }
 }

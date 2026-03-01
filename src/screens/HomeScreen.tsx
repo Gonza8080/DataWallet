@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -12,8 +12,10 @@ import {
   TextInput,
   Keyboard,
   Pressable,
+  StatusBar,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import * as LocalAuthentication from 'expo-local-authentication';
@@ -24,12 +26,22 @@ import { DeleteConfirmDialog } from '../components/DeleteConfirmDialog';
 import { ContextMenu } from '../components/ContextMenu';
 import { Toast } from '../components/Toast';
 import { colors } from '../constants/colors';
-import { storeTiles, loadTiles } from '../utils/storage';
+import { storeTiles, loadTiles, getStorageInfo, deleteTileSecureContent, storeSortMode, loadSortMode, loadSampleTilesIfFirstLaunch } from '../utils/storage';
+import { BottomMenu, SortMode } from '../components/BottomMenu';
+import { AlertDialog } from '../components/AlertDialog';
+import { exportTiles, importTiles } from '../utils/exportImport';
 import type { Tile as TileType } from '../types/tile';
 
 // Minimum time in background (in milliseconds) before tile positions can be updated
 // Options: 30000 (30 sec), 60000 (1 min), 180000 (3 min), 300000 (5 min)
 const BACKGROUND_THRESHOLD_MS = 60000; // 1 minute - recommended default
+
+// AsyncStorage key for clipboard token tracking
+const CLIPBOARD_TOKEN_KEY = 'pb.lastPromptedClipboardToken.v1';
+
+// Clipboard permission dialog detection threshold (in milliseconds)
+// If clipboard access takes longer than this, we assume iOS showed the permission dialog
+const CLIPBOARD_PERMISSION_THRESHOLD_MS = 500; // 500ms catches quick permission approvals
 
 export const HomeScreen: React.FC = () => {
   const [tiles, setTiles] = useState<TileType[]>([]);
@@ -38,6 +50,8 @@ export const HomeScreen: React.FC = () => {
   const [deletingTile, setDeletingTile] = useState<TileType | null>(null);
   const [pressedTileId, setPressedTileId] = useState<string | null>(null);
   const [pressedTimestamp, setPressedTimestamp] = useState<number>(0);
+  const [failedAuthTileId, setFailedAuthTileId] = useState<string | null>(null);
+  const [failedAuthTimestamp, setFailedAuthTimestamp] = useState<number>(0);
   const [contextMenuVisible, setContextMenuVisible] = useState(false);
   const [contextMenuTile, setContextMenuTile] = useState<TileType | null>(null);
   const [contextMenuPosition, setContextMenuPosition] = useState({ x: 0, y: 0 });
@@ -45,14 +59,13 @@ export const HomeScreen: React.FC = () => {
   const [toastMessage, setToastMessage] = useState('');
   const fadeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
-  // Double tap functionality
+  // Double tap functionality (native gesture handler in Tile component)
   const [showingContentTileId, setShowingContentTileId] = useState<string | null>(null);
-  const lastTapRef = useRef<{ tileId: string; timestamp: number } | null>(null);
-  const tapTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const justRevealedRef = useRef<string | null>(null); // Track tiles that just revealed content
   
   // Clipboard prefill functionality
   const [clipboardContent, setClipboardContent] = useState<string | null>(null);
-  const dismissedClipboardContent = useRef<string | null>(null);
+  const clipboardClearTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
   // Track display order separately from actual tile data
   // This order is frozen while app is active and only updates after background threshold
@@ -61,85 +74,124 @@ export const HomeScreen: React.FC = () => {
   const appState = useRef<AppStateStatus>(AppState.currentState);
   
   // Search functionality
+  const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef<TextInput>(null);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
 
-  const showToast = (message: string) => {
+  // Sort mode
+  const [sortMode, setSortMode] = useState<SortMode>('frequency');
+  const [isBottomMenuVisible, setIsBottomMenuVisible] = useState(false);
+
+  // Import checksum warning
+  const [pendingImportTiles, setPendingImportTiles] = useState<TileType[] | null>(null);
+  const [checksumWarningVisible, setChecksumWarningVisible] = useState(false);
+
+  // Scroll tracking for header (only shrink when content is scrollable)
+  const [isScrolled, setIsScrolled] = useState(false);
+  const [contentHeight, setContentHeight] = useState(0);
+  const [containerHeight, setContainerHeight] = useState(0);
+  const isScrollable = contentHeight > containerHeight;
+  
+  // Get safe area insets to ensure status bar visibility
+  const insets = useSafeAreaInsets();
+
+  const showToast = useCallback((message: string) => {
     setToastMessage(message);
     setToastVisible(true);
-  };
+  }, []);
 
   // Helper function to close any open tile
-  const closeOpenTile = () => {
-    if (showingContentTileId !== null) {
-      setShowingContentTileId(null);
-    }
-  };
+  const closeOpenTile = useCallback(() => {
+    setShowingContentTileId(null);
+    justRevealedRef.current = null; // Clear flag so next tap works normally
+  }, []);
 
-  // Check if clipboard content matches any existing tile
-  const hasMatchingTile = (content: string): boolean => {
-    const normalizedContent = content.trim().toLowerCase();
-    return tiles.some(tile => 
-      tile.content.trim().toLowerCase() === normalizedContent
-    );
-  };
+  const computeSortedOrder = useCallback((tilesToSort: TileType[], mode: SortMode = sortMode): string[] => {
+    const sorted = [...tilesToSort].sort((a, b) => {
+      if (a.isPriority && !b.isPriority) return -1;
+      if (!a.isPriority && b.isPriority) return 1;
 
-  // Biometric authentication with retry logic and better error handling
-  const authenticateWithBiometrics = async (promptMessage: string): Promise<boolean> => {
+      if (mode === 'alphabetical') {
+        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      }
+
+      if (a.usageCount !== b.usageCount) return b.usageCount - a.usageCount;
+      return b.createdAt - a.createdAt;
+    });
+    return sorted.map(tile => tile.id);
+  }, [sortMode]);
+
+  // Biometric authentication - single attempt, no retry loop
+  const authenticateWithBiometrics = useCallback(async (promptMessage: string): Promise<boolean> => {
     try {
-      // Check if biometric hardware is available
+      // Check if biometric hardware is available (don't show loading yet)
       const hasHardware = await LocalAuthentication.hasHardwareAsync();
       if (!hasHardware) {
         showToast('Biometric authentication not available on this device');
         return false;
       }
 
-      // Check if biometrics are enrolled
+      // Check if biometrics are enrolled (don't show loading yet)
       const isEnrolled = await LocalAuthentication.isEnrolledAsync();
       if (!isEnrolled) {
         showToast('No biometric credentials enrolled. Please set up Face ID or Touch ID in Settings');
         return false;
       }
 
-      // Attempt authentication with up to 2 retries
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const result = await LocalAuthentication.authenticateAsync({
-          promptMessage,
-          cancelLabel: 'Cancel',
-          disableDeviceFallback: false,
-          fallbackLabel: 'Use Passcode',
-        });
+      // Single authentication attempt (no loading overlay - Face ID has its own UI)
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage,
+        cancelLabel: 'Cancel',
+        disableDeviceFallback: false,
+      });
 
-        if (result.success) {
-          return true;
+      if (result.success) {
+        return true;
+      }
+
+      // Handle authentication failure
+      if ('error' in result) {
+        if (result.error === 'user_cancel' || result.error === 'system_cancel' || result.error === 'app_cancel') {
+          // User explicitly cancelled - silent fail, no toast
+          return false;
         }
-
-        // Authentication failed - check if we should retry
-        // Note: result.success is false here, which means user failed auth or cancelled
-        // We'll show a generic message and allow retry
-        
-        // Show retry message for failed attempts (but not on last attempt)
-        if (attempt < 2) {
-          showToast('Authentication failed. Please try again');
-          // Small delay before retry
-          await new Promise(resolve => setTimeout(resolve, 500));
+        if (result.error === 'lockout') {
+          showToast('Too many attempts. Try again later.');
+          return false;
+        }
+        if (result.error === 'authentication_failed') {
+          // Authentication failed (wrong face/finger) - silent fail
+          return false;
+        }
+        if (result.error === 'not_available') {
+          showToast('Biometric authentication not available');
+          return false;
+        }
+        if (result.error === 'passcode_not_set') {
+          showToast('Please set up a device passcode first');
+          return false;
+        }
+        if (result.error === 'not_enrolled') {
+          showToast('No biometrics enrolled. Set up Face ID or Touch ID in Settings');
+          return false;
         }
       }
 
-      // After 3 failed attempts
-      showToast('Authentication failed after multiple attempts. Please try again later');
+      // Generic failure message for other unexpected errors
+      showToast(`Authentication failed: ${('error' in result) ? result.error : 'unknown'}`);
       return false;
     } catch (error) {
-      console.error('Biometric authentication error:', error);
+      // Biometric authentication error
       showToast('Authentication error occurred');
       return false;
     }
-  };
+  }, [showToast]);
 
   const handleClearSearch = () => {
     closeOpenTile();
+    setSearchInput('');
     setSearchQuery('');
     Keyboard.dismiss();
     // Delay the state update to prevent visual glitch
@@ -151,29 +203,20 @@ export const HomeScreen: React.FC = () => {
   const handleSearchBlur = () => {
     closeOpenTile();
     // If search is empty, close it completely
-    if (!searchQuery.trim()) {
+    if (!searchInput.trim()) {
       setIsSearchFocused(false);
     }
     // If search has text, keep it active but just close keyboard
     // isSearchFocused stays true to keep the X button visible
   };
 
-  // Helper function to compute sorted tile order based on priority -> usage -> newest
-  const computeSortedOrder = (tilesToSort: TileType[]): string[] => {
-    const sorted = [...tilesToSort].sort((a, b) => {
-      if (a.isPriority && !b.isPriority) return -1;
-      if (!a.isPriority && b.isPriority) return 1;
-      if (a.usageCount !== b.usageCount) return b.usageCount - a.usageCount;
-      return b.createdAt - a.createdAt;
-    });
-    return sorted.map(tile => tile.id);
-  };
-
-  // Load tiles on mount
   useEffect(() => {
-    loadTilesFromStorage();
-    checkClipboard();
-  }, []);
+    const handler = setTimeout(() => {
+      setSearchQuery(searchInput);
+    }, 200);
+
+    return () => clearTimeout(handler);
+  }, [searchInput]);
 
   // Track keyboard visibility
   useEffect(() => {
@@ -200,10 +243,94 @@ export const HomeScreen: React.FC = () => {
 
   // Save tiles whenever they change
   useEffect(() => {
-    if (tiles.length > 0) {
-      storeTiles(tiles);
+    const saveTiles = async () => {
+      if (tiles.length > 0) {
+        const result = await storeTiles(tiles);
+        if (!result.success && result.error) {
+          showToast(result.error);
+        }
+      }
+    };
+    saveTiles();
+  }, [tiles, showToast]);
+
+  // Use timestamp-based approach for clipboard detection
+  async function getClipboardChangeToken(): Promise<number> {
+    return Date.now();
+  }
+
+  const checkClipboard = useCallback(async () => {
+    try {
+      // Get current timestamp
+      const tokenNow = await getClipboardChangeToken();
+
+      // Get saved token
+      const lastStr = await AsyncStorage.getItem(CLIPBOARD_TOKEN_KEY);
+      const lastToken = lastStr ? Number(lastStr) : 0;
+
+      // Always check clipboard (timestamp-based workaround)
+
+      // 4) Токен вырос ⇒ буфер меняли, пока нас не было.
+      //    WORKAROUND: Force iOS to show permission dialog with double-read pattern
+      
+      // Start timer to measure clipboard access duration
+      const startTime = Date.now();
+      
+      // First read attempt - might be cached/silent
+      let content = '';
+      let clipboardAccessTime = 0;
+      
+      try {
+        content = await Clipboard.getStringAsync();
+        clipboardAccessTime = Date.now() - startTime;
+      } catch (e) {
+        // Silently handle clipboard read failures
+      }
+
+      // If we didn't get content or it was too fast, try again
+      if (!content || clipboardAccessTime < 50) {
+        // Small delay to ensure iOS processes the first request
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        // Second read - this often triggers the permission dialog
+        // iOS sees repeated access attempts as potentially suspicious
+        try {
+          const secondStartTime = Date.now();
+          content = await Clipboard.getStringAsync();
+          clipboardAccessTime = Date.now() - secondStartTime;
+        } catch (e) {
+          // AGGRESSIVE WORKAROUND: Try a third time with longer delay
+          await new Promise(resolve => setTimeout(resolve, 200));
+          try {
+            const thirdStartTime = Date.now();
+            content = await Clipboard.getStringAsync();
+            clipboardAccessTime = Date.now() - thirdStartTime;
+          } catch (e2) {
+            // Silently handle third read failure
+          }
+        }
+      }
+
+      const hasContent = !!(content && content.trim().length > 0 && content.length < 2000);
+      const shouldShowModal = clipboardAccessTime > CLIPBOARD_PERMISSION_THRESHOLD_MS;
+
+      // 5) Store the token to prevent re-triggering for the same copy event
+      // In production: stores the actual changeCount
+      // In Expo Go: stores the timestamp (but we always check anyway)
+      await AsyncStorage.setItem(CLIPBOARD_TOKEN_KEY, String(tokenNow));
+
+      // 6) Only open modal if:
+      // - We have valid content
+      // - The access time suggests iOS showed a permission dialog
+      if (hasContent && shouldShowModal) {
+        setClipboardContent(content);
+        setIsAddModalOpen((cur) => (cur ? cur : true));
+      }
+      // если пусто — молча выходим (но токен уже обновлён, и повторов не будет)
+    } catch (error) {
+      // Silently handle clipboard check failures
     }
-  }, [tiles]);
+  }, []);
 
   // Handle app state changes (background/foreground)
   useEffect(() => {
@@ -226,7 +353,7 @@ export const HomeScreen: React.FC = () => {
           setDisplayOrder(newOrder);
         }
         
-        // Check clipboard when app returns to foreground
+        // Проверяем системный токен clipboard при возврате в актив
         checkClipboard();
         
         backgroundTimestamp.current = null;
@@ -238,7 +365,7 @@ export const HomeScreen: React.FC = () => {
     return () => {
       subscription.remove();
     };
-  }, [tiles]);
+  }, [tiles, checkClipboard, computeSortedOrder]);
 
   // Initialize display order when tiles are first loaded
   useEffect(() => {
@@ -246,56 +373,152 @@ export const HomeScreen: React.FC = () => {
       const initialOrder = computeSortedOrder(tiles);
       setDisplayOrder(initialOrder);
     }
-  }, [tiles, displayOrder]);
+  }, [tiles, displayOrder, computeSortedOrder]);
 
-  const loadTilesFromStorage = async () => {
-    const loadedTiles = await loadTiles();
-    setTiles(loadedTiles);
-    // Set initial display order
-    if (loadedTiles.length > 0) {
-      const initialOrder = computeSortedOrder(loadedTiles);
-      setDisplayOrder(initialOrder);
+  const handleSortModeChange = useCallback((mode: SortMode) => {
+    setSortMode(mode);
+    storeSortMode(mode);
+    const newOrder = computeSortedOrder(tiles, mode);
+    setDisplayOrder(newOrder);
+  }, [tiles, computeSortedOrder]);
+
+  const applyImportedTiles = useCallback((importedTiles: TileType[]) => {
+    const updatedTiles = [...tiles, ...importedTiles];
+    setTiles(updatedTiles);
+    const newOrder = computeSortedOrder(updatedTiles);
+    setDisplayOrder(newOrder);
+    showToast(`Imported ${importedTiles.length} nugget${importedTiles.length === 1 ? '' : 's'}`);
+  }, [tiles, computeSortedOrder, showToast]);
+
+  const handleExport = useCallback(async () => {
+    if (tiles.length === 0) {
+      showToast('No nuggets to export');
+      return;
     }
-  };
 
-  const checkClipboard = async () => {
+    const hasSecure = tiles.some(t => t.isSecure);
+    if (hasSecure) {
+      const authenticated = await authenticateWithBiometrics(
+        'Authenticate to export secure nuggets'
+      );
+      if (!authenticated) {
+        showToast('Authentication required to export secure nuggets');
+        return;
+      }
+    }
+
+    const result = await exportTiles(tiles);
+    if (!result.success && result.error) {
+      showToast(result.error);
+    }
+  }, [tiles, authenticateWithBiometrics, showToast]);
+
+  const handleImport = useCallback(async () => {
+    const result = await importTiles();
+
+    if (!result.success) {
+      if (result.error) {
+        showToast(result.error);
+      }
+      return;
+    }
+
+    if (!result.tiles || result.tiles.length === 0) {
+      showToast('No valid nuggets found in file');
+      return;
+    }
+
+    if (result.checksumMismatch) {
+      setPendingImportTiles(result.tiles);
+      setChecksumWarningVisible(true);
+      return;
+    }
+
+    applyImportedTiles(result.tiles);
+  }, [showToast, applyImportedTiles]);
+
+  const confirmChecksumImport = useCallback(() => {
+    if (pendingImportTiles) {
+      applyImportedTiles(pendingImportTiles);
+    }
+    setPendingImportTiles(null);
+    setChecksumWarningVisible(false);
+  }, [pendingImportTiles, applyImportedTiles]);
+
+  const cancelChecksumImport = useCallback(() => {
+    setPendingImportTiles(null);
+    setChecksumWarningVisible(false);
+  }, []);
+
+  const loadTilesFromStorage = useCallback(async () => {
     try {
-      const content = await Clipboard.getStringAsync();
-      
-      console.log('Checking clipboard:', {
-        hasContent: !!content,
-        contentLength: content?.length,
-        hasMatchingTile: content ? hasMatchingTile(content) : false,
-        wasDismissed: content === dismissedClipboardContent.current,
-        dismissedContent: dismissedClipboardContent.current
-      });
-      
-      // Directly open tile creation modal if:
-      // 1. Content is not empty
-      // 2. Content is reasonable length (not too long)
-      // 3. Content doesn't already exist in a tile
-      // 4. Content wasn't previously dismissed by the user
-      if (
-        content && 
-        content.trim().length > 0 && 
-        content.length < 1000 &&
-        !hasMatchingTile(content) &&
-        content !== dismissedClipboardContent.current
-      ) {
-        console.log('Opening dialog with clipboard content');
-        setClipboardContent(content);
-        setIsAddModalOpen(true);
+      const savedSortMode = await loadSortMode();
+      const activeMode: SortMode = (savedSortMode === 'alphabetical' || savedSortMode === 'frequency')
+        ? savedSortMode
+        : 'frequency';
+      setSortMode(activeMode);
+
+      let loadedTiles = await loadTiles();
+
+      if (loadedTiles.length === 0) {
+        const { tiles: sampleTiles, isFirstLaunch } = await loadSampleTilesIfFirstLaunch();
+        if (isFirstLaunch && sampleTiles.length > 0) {
+          loadedTiles = sampleTiles;
+          await storeTiles(sampleTiles);
+          showToast('These are sample nuggets. Feel free to delete them!');
+        }
+      }
+
+      setTiles(loadedTiles);
+      if (loadedTiles.length > 0) {
+        const initialOrder = computeSortedOrder(loadedTiles, activeMode);
+        setDisplayOrder(initialOrder);
+        
+        const storageInfo = await getStorageInfo();
+        if (storageInfo.isNearLimit) {
+          showToast(`Storage at ${Math.round(storageInfo.percentUsed)}%. Consider deleting unused nuggets.`);
+        }
       } else {
-        console.log('Not opening dialog - conditions not met');
+        setDisplayOrder([]);
       }
     } catch (error) {
-      // User denied permission or clipboard access failed
-      console.log('Clipboard access denied or failed:', error);
+      // Silently handle errors
     }
-  };
+  }, [computeSortedOrder, showToast]);
 
+
+  // Load tiles on mount
+  useEffect(() => {
+    loadTilesFromStorage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Initialize clipboard token on first run to avoid false positives
+  useEffect(() => {
+    (async () => {
+      try {
+        const tokenNow = await getClipboardChangeToken();
+        const lastStr = await AsyncStorage.getItem(CLIPBOARD_TOKEN_KEY);
+        if (!lastStr && tokenNow) {
+          await AsyncStorage.setItem(CLIPBOARD_TOKEN_KEY, String(tokenNow));
+        }
+      } catch {}
+    })();
+  }, []);
+
+  // Cleanup all timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (clipboardClearTimeoutRef.current) {
+        clearTimeout(clipboardClearTimeoutRef.current);
+      }
+      if (fadeTimeoutRef.current) {
+        clearTimeout(fadeTimeoutRef.current);
+      }
+    };
+  }, []);
   // Sort tiles based on display order (frozen during app session)
-  const sortedTiles = React.useMemo(() => {
+  const sortedTiles = useMemo(() => {
     if (displayOrder.length === 0) return tiles;
     
     // Create a map for quick lookup
@@ -314,7 +537,7 @@ export const HomeScreen: React.FC = () => {
   }, [tiles, displayOrder]);
 
   // Filter tiles based on search query
-  const filteredTiles = React.useMemo(() => {
+  const filteredTiles = useMemo(() => {
     // If no search query, show all tiles
     if (!searchQuery.trim()) {
       // But if search is focused and empty, show no tiles
@@ -341,27 +564,54 @@ export const HomeScreen: React.FC = () => {
     });
   }, [sortedTiles, searchQuery, isSearchFocused]);
 
-  const handleTileTap = async (tile: TileType) => {
-    const now = Date.now();
-    const lastTap = lastTapRef.current;
+  const handleDoubleTap = useCallback(
+    async (tile: TileType) => {
+      if (Platform.OS === 'ios') {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      }
 
+      if (showingContentTileId === tile.id) {
+        setShowingContentTileId(null);
+        justRevealedRef.current = null; // Clear the flag when hiding content
+        return;
+      }
+
+      if (tile.isSecure) {
+        const authenticated = await authenticateWithBiometrics(`Authenticate to view ${tile.name}`);
+        if (!authenticated) {
+          // Clear pressed state immediately when authentication fails
+          setPressedTileId(null);
+          if (fadeTimeoutRef.current) {
+            clearTimeout(fadeTimeoutRef.current);
+            fadeTimeoutRef.current = null;
+          }
+          // Trigger red flash animation
+          setFailedAuthTileId(tile.id);
+          setFailedAuthTimestamp(Date.now());
+          // Clear after fade-back has started to allow re-triggering
+          setTimeout(() => {
+            setFailedAuthTileId(null);
+            setFailedAuthTimestamp(0);
+          }, 160); // 160ms = 10ms after fade-back animation starts
+          return;
+        }
+      }
+
+      setShowingContentTileId(tile.id);
+      justRevealedRef.current = tile.id; // Mark this tile as just revealed
+    },
+    [authenticateWithBiometrics, showingContentTileId]
+  );
+
+  const handleTileTap = useCallback(async (tile: TileType) => {
     // If any tile is showing content, close it first but continue with the tap action
     closeOpenTile();
 
-    // Check for double tap (within 300ms)
-    if (lastTap && lastTap.tileId === tile.id && now - lastTap.timestamp < 300) {
-      // Double tap detected - cancel any pending single tap action
-      if (tapTimeoutRef.current) {
-        clearTimeout(tapTimeoutRef.current);
-        tapTimeoutRef.current = null;
-      }
-      lastTapRef.current = null;
-      handleDoubleTap(tile);
+    // If this tile was just revealed by double-tap, skip copy on first tap
+    if (justRevealedRef.current === tile.id) {
+      justRevealedRef.current = null; // Clear the flag for next tap
       return;
     }
-
-    // Store this tap for double tap detection
-    lastTapRef.current = { tileId: tile.id, timestamp: now };
 
     // Clear any existing fade timeout
     if (fadeTimeoutRef.current) {
@@ -384,68 +634,70 @@ export const HomeScreen: React.FC = () => {
     }, 4150);
     fadeTimeoutRef.current = timeout;
 
-    // Delay the copy action to wait for potential double tap
-    tapTimeoutRef.current = setTimeout(async () => {
-      // Biometric authentication for secure tiles
-      if (tile.isSecure) {
-        const authenticated = await authenticateWithBiometrics(`Authenticate to copy ${tile.name}`);
-        if (!authenticated) {
-          return;
-        }
-      }
-
-      // Copy to clipboard
-      await Clipboard.setStringAsync(tile.content);
-      
-      // Haptic feedback on successful copy
-      if (Platform.OS === 'ios') {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      }
-      
-      showToast(`Copied: ${tile.name}`);
-
-      // Update usage count
-      setTiles((prev) =>
-        prev.map((t) =>
-          t.id === tile.id
-            ? { ...t, usageCount: t.usageCount + 1, lastUsed: Date.now() }
-            : t
-        )
-      );
-    }, 300);
-  };
-
-  const handleDoubleTap = async (tile: TileType) => {
-    // Haptic feedback for double tap
-    if (Platform.OS === 'ios') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    }
-
-    // If closing the content, no auth needed
-    if (showingContentTileId === tile.id) {
-      setShowingContentTileId(null);
-      return;
-    }
-
-    // Authentication for secure tiles before showing content
+    // Biometric authentication for secure tiles
     if (tile.isSecure) {
-      const authenticated = await authenticateWithBiometrics(`Authenticate to view ${tile.name}`);
+      const authenticated = await authenticateWithBiometrics(`Authenticate to copy ${tile.name}`);
       if (!authenticated) {
+        // Clear pressed state immediately when authentication fails
+        setPressedTileId(null);
+        if (fadeTimeoutRef.current) {
+          clearTimeout(fadeTimeoutRef.current);
+          fadeTimeoutRef.current = null;
+        }
+        // Trigger red flash animation
+        setFailedAuthTileId(tile.id);
+        setFailedAuthTimestamp(Date.now());
+        // Clear after fade-back has started to allow re-triggering
+        setTimeout(() => {
+          setFailedAuthTileId(null);
+          setFailedAuthTimestamp(0);
+        }, 160); // 160ms = 10ms after fade-back animation starts
         return;
       }
     }
 
-    // Show content after authentication (or immediately for non-secure tiles)
-    setShowingContentTileId(tile.id);
-  };
+    // Copy to clipboard
+    await Clipboard.setStringAsync(tile.content);
+    
+    // Auto-clear clipboard after 90 seconds for security
+    if (clipboardClearTimeoutRef.current) {
+      clearTimeout(clipboardClearTimeoutRef.current);
+    }
+    clipboardClearTimeoutRef.current = setTimeout(async () => {
+      try {
+        // Only clear if the content hasn't changed
+        const currentClipboard = await Clipboard.getStringAsync();
+        if (currentClipboard === tile.content) {
+          await Clipboard.setStringAsync('');
+        }
+      } catch (error) {
+        // Silently fail
+      }
+    }, 90000); // 90 seconds
+    
+    // Haptic feedback on successful copy
+    if (Platform.OS === 'ios') {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+    
+    showToast(`Copied: ${tile.name}`);
 
-  const handleTileLongPress = (tile: TileType, position: { x: number; y: number }) => {
+    // Update usage count
+    setTiles((prev) =>
+      prev.map((t) =>
+        t.id === tile.id
+          ? { ...t, usageCount: t.usageCount + 1, lastUsed: Date.now() }
+          : t
+      )
+    );
+  }, [authenticateWithBiometrics, closeOpenTile, showToast]);
+
+  const handleTileLongPress = useCallback((tile: TileType, position: { x: number; y: number }) => {
     setContextMenuTile(tile);
     setContextMenuPosition(position);
     setContextMenuVisible(true);
-    // Clear any showing content when opening context menu
     setShowingContentTileId(null);
-  };
+  }, []);
 
   const handleAddTile = (
     tileData: Omit<TileType, 'id' | 'usageCount' | 'createdAt' | 'lastUsed'>
@@ -466,7 +718,7 @@ export const HomeScreen: React.FC = () => {
       }
       
       setEditingTile(null);
-      showToast('Tile updated');
+      showToast('Nugget updated');
     } else {
       // Add new tile
       const newTile: TileType = {
@@ -488,16 +740,32 @@ export const HomeScreen: React.FC = () => {
         setDisplayOrder(prev => [...prev, newTile.id]);
       }
       
-      // Clear clipboard content and dismissed tracking after successful creation
+      // Clear clipboard content after successful creation
       setClipboardContent(null);
-      dismissedClipboardContent.current = null;
       
-      showToast('Tile created');
+      showToast('Nugget created');
     }
   };
 
-  const handleEditTile = () => {
+  const handleEditTile = async () => {
     if (contextMenuTile) {
+      // Require authentication for secure tiles
+      if (contextMenuTile.isSecure) {
+        const authenticated = await authenticateWithBiometrics(`Authenticate to edit ${contextMenuTile.name}`);
+        if (!authenticated) {
+          setContextMenuVisible(false);
+          // Trigger red flash animation
+          setFailedAuthTileId(contextMenuTile.id);
+          setFailedAuthTimestamp(Date.now());
+          // Clear after fade-back has started to allow re-triggering
+          setTimeout(() => {
+            setFailedAuthTileId(null);
+            setFailedAuthTimestamp(0);
+          }, 160); // 160ms = 10ms after fade-back animation starts
+          return;
+        }
+      }
+      
       setEditingTile(contextMenuTile);
       setIsAddModalOpen(true);
       setContextMenuVisible(false);
@@ -509,11 +777,31 @@ export const HomeScreen: React.FC = () => {
     setContextMenuVisible(false);
   };
 
-  const confirmDelete = () => {
+  const confirmDelete = async () => {
     if (deletingTile) {
+      // Require authentication for secure tiles
+      if (deletingTile.isSecure) {
+        const authenticated = await authenticateWithBiometrics(`Authenticate to delete ${deletingTile.name}`);
+        if (!authenticated) {
+          setDeletingTile(null);
+          // Trigger red flash animation
+          setFailedAuthTileId(deletingTile.id);
+          setFailedAuthTimestamp(Date.now());
+          // Clear after fade-back has started to allow re-triggering
+          setTimeout(() => {
+            setFailedAuthTileId(null);
+            setFailedAuthTimestamp(0);
+          }, 160); // 160ms = 10ms after fade-back animation starts
+          return;
+        }
+        
+        // Clean up SecureStore after authentication
+        await deleteTileSecureContent(deletingTile.id);
+      }
+      
       setTiles((prev) => prev.filter((t) => t.id !== deletingTile.id));
       setDisplayOrder(prev => prev.filter(id => id !== deletingTile.id));
-      showToast('Tile deleted');
+      showToast('Nugget deleted');
       setDeletingTile(null);
     }
   };
@@ -544,6 +832,14 @@ export const HomeScreen: React.FC = () => {
         const authenticated = await authenticateWithBiometrics(`Authenticate to unsecure ${contextMenuTile.name}`);
         if (!authenticated) {
           setContextMenuVisible(false);
+          // Trigger red flash animation
+          setFailedAuthTileId(contextMenuTile.id);
+          setFailedAuthTimestamp(Date.now());
+          // Clear after fade-back has started to allow re-triggering
+          setTimeout(() => {
+            setFailedAuthTileId(null);
+            setFailedAuthTimestamp(0);
+          }, 160); // 160ms = 10ms after fade-back animation starts
           return;
         }
       }
@@ -555,24 +851,47 @@ export const HomeScreen: React.FC = () => {
         )
       );
       showToast(
-        contextMenuTile.isSecure ? 'Tile unsecured' : 'Tile secured'
+        contextMenuTile.isSecure ? 'Nugget unsecured' : 'Nugget secured'
       );
       setContextMenuVisible(false);
     }
   };
 
-  const renderTile = ({ item }: { item: TileType }) => (
-    <View style={styles.tileWrapper}>
-      <Tile
-        tile={item}
-        onTap={handleTileTap}
-        onLongPress={handleTileLongPress}
-        pressedTileId={pressedTileId}
-        pressedTimestamp={pressedTimestamp}
-        isContextMenuOpen={contextMenuVisible}
-        showContent={showingContentTileId === item.id}
-      />
-    </View>
+  const renderTile = useCallback(
+    ({ item }: { item: TileType }) => (
+      <View style={styles.tileWrapper}>
+        <Tile
+          tile={item}
+          onTap={handleTileTap}
+          onDoubleTap={handleDoubleTap}
+          onLongPress={handleTileLongPress}
+          pressedTileId={pressedTileId}
+          pressedTimestamp={pressedTimestamp}
+          failedAuthTileId={failedAuthTileId}
+          failedAuthTimestamp={failedAuthTimestamp}
+          isContextMenuOpen={contextMenuVisible}
+          showContent={showingContentTileId === item.id}
+        />
+      </View>
+    ),
+    [
+      handleTileTap,
+      handleDoubleTap,
+      handleTileLongPress,
+      pressedTileId,
+      pressedTimestamp,
+      failedAuthTileId,
+      failedAuthTimestamp,
+      contextMenuVisible,
+      showingContentTileId,
+    ]
+  );
+
+  const keyExtractor = useCallback((item: TileType) => item.id, []);
+
+  const listHeaderComponent = useMemo(
+    () => <View style={{ height: keyboardHeight > 0 ? 20 : 100 }} />,
+    [keyboardHeight]
   );
 
   const renderEmptyState = () => {
@@ -601,9 +920,9 @@ export const HomeScreen: React.FC = () => {
           style={styles.emptyImage}
           resizeMode="contain"
         />
-        <Text style={styles.emptyTitle}>No tiles yet</Text>
+        <Text style={styles.emptyTitle}>No nuggets yet</Text>
         <Text style={styles.emptyDescription}>
-          Tap the + button to create your first tile
+          Tap the + button to create your first nugget
         </Text>
         <TouchableOpacity
           style={styles.emptyAddButton}
@@ -612,36 +931,61 @@ export const HomeScreen: React.FC = () => {
             setIsAddModalOpen(true);
           }}
           activeOpacity={0.7}
+          accessible={true}
+          accessibilityRole="button"
+          accessibilityLabel="Create first nugget"
+          accessibilityHint="Opens the create new nugget dialog"
         >
-          <Text style={styles.addButtonText}>+</Text>
+          <Ionicons name="add" size={28} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
     );
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={[]}>
+      <StatusBar 
+        barStyle="light-content" 
+        backgroundColor="#000000"
+        hidden={false}
+      />
       {/* Header */}
-      <Pressable style={styles.header} onPress={closeOpenTile}>
-        <Text style={styles.headerTitle}>DataWallet</Text>
-        {searchQuery.trim() && (
-          <Text style={styles.resultsCounter}>
-            {filteredTiles.length} {filteredTiles.length === 1 ? 'result' : 'results'} found
+      <View style={[styles.header, isScrolled && styles.headerScrolled, { paddingTop: insets.top + (isScrolled ? 10 : 20), paddingBottom: isScrolled ? 10 : 20 }]}>
+        <Pressable onPress={closeOpenTile} style={styles.headerLeft}>
+          <Text style={[styles.headerTitle, isScrolled && styles.headerTitleScrolled]}>
+            Nuggio
           </Text>
-        )}
-      </Pressable>
+          {searchQuery.trim() && (
+            <Text style={styles.resultsCounter}>
+              {filteredTiles.length} {filteredTiles.length === 1 ? 'result' : 'results'} found
+            </Text>
+          )}
+        </Pressable>
+        <TouchableOpacity
+          onPress={() => setIsBottomMenuVisible(true)}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          style={styles.headerMenuButton}
+          accessible={true}
+          accessibilityRole="button"
+          accessibilityLabel="Open menu"
+          accessibilityHint="Opens settings menu"
+        >
+          <Ionicons name="ellipsis-horizontal" size={24} color={colors.foreground} />
+        </TouchableOpacity>
+      </View>
 
       {/* Content */}
-      <Pressable 
+      <View 
         style={[styles.contentWrapper, keyboardHeight > 0 && { marginBottom: keyboardHeight }]}
-        onPress={() => {
-          closeOpenTile();
-          if (isSearchFocused && !searchQuery.trim()) {
-            Keyboard.dismiss();
-            // Delay the state update to prevent visual glitch
-            setTimeout(() => {
-              setIsSearchFocused(false);
-            }, 100);
+        onTouchEnd={(e) => {
+          if (e.nativeEvent.target === e.nativeEvent.currentTarget) {
+            closeOpenTile();
+            if (isSearchFocused && !searchQuery.trim()) {
+              Keyboard.dismiss();
+              setTimeout(() => {
+                setIsSearchFocused(false);
+              }, 100);
+            }
           }
         }}
       >
@@ -653,16 +997,33 @@ export const HomeScreen: React.FC = () => {
           <FlatList
             data={filteredTiles}
             renderItem={renderTile}
-            keyExtractor={(item) => item.id}
+            keyExtractor={keyExtractor}
             numColumns={3}
             inverted
             contentContainerStyle={styles.grid}
             columnWrapperStyle={styles.row}
-            ListHeaderComponent={() => <View style={{ height: keyboardHeight > 0 ? 20 : 100 }} />}
+            ListHeaderComponent={listHeaderComponent}
             keyboardShouldPersistTaps="handled"
+            removeClippedSubviews
+            initialNumToRender={12}
+            maxToRenderPerBatch={16}
+            updateCellsBatchingPeriod={50}
+            windowSize={7}
+            onScroll={(event) => {
+              if (!isScrollable) {
+                if (isScrolled) setIsScrolled(false);
+                return;
+              }
+              const offset = event.nativeEvent.contentOffset.y;
+              if (offset > 80 && !isScrolled) setIsScrolled(true);
+              else if (offset < 20 && isScrolled) setIsScrolled(false);
+            }}
+            scrollEventThrottle={16}
+            onContentSizeChange={(_, h) => setContentHeight(h)}
+            onLayout={(e) => setContainerHeight(e.nativeEvent.layout.height)}
           />
         )}
-      </Pressable>
+      </View>
 
       {/* Bottom Bar: Search and FAB */}
       <View style={[
@@ -674,7 +1035,7 @@ export const HomeScreen: React.FC = () => {
           <TextInput
             ref={searchInputRef}
             style={styles.searchInput}
-            placeholder="SEARCH"
+            placeholder="Search"
             placeholderTextColor={colors.mutedForeground}
             value={searchQuery}
             onChangeText={setSearchQuery}
@@ -689,15 +1050,22 @@ export const HomeScreen: React.FC = () => {
             returnKeyType="search"
             clearButtonMode="never"
             keyboardAppearance="dark"
+            accessible={true}
+            accessibilityLabel="Search nuggets"
+            accessibilityHint="Search for nuggets by name or content"
           />
-          {(isSearchFocused || searchQuery.length > 0) && (
+          {(isSearchFocused || searchInput.length > 0 || searchQuery.length > 0) && (
             <TouchableOpacity
               style={styles.clearButton}
               onPress={handleClearSearch}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              accessible={true}
+              accessibilityRole="button"
+              accessibilityLabel="Close search"
+              accessibilityHint="Tap to close search query"
             >
               <View style={styles.clearButtonCircle}>
-                <Text style={styles.clearButtonText}>✕</Text>
+                <Ionicons name="close" size={14} color={colors.background} accessibilityElementsHidden={true} />
               </View>
             </TouchableOpacity>
           )}
@@ -711,8 +1079,12 @@ export const HomeScreen: React.FC = () => {
             setIsAddModalOpen(true);
           }}
           activeOpacity={0.8}
+          accessible={true}
+          accessibilityRole="button"
+          accessibilityLabel="Add new nugget"
+          accessibilityHint="Opens the create new nugget dialog"
         >
-          <Text style={styles.fabIcon}>+</Text>
+          <Ionicons name="add" size={28} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
 
@@ -720,10 +1092,7 @@ export const HomeScreen: React.FC = () => {
       <AddTileModal
         visible={isAddModalOpen && !editingTile}
         onClose={() => {
-          // Mark clipboard content as dismissed ONLY if it was prefilled and dialog is closing without saving
-          if (clipboardContent) {
-            dismissedClipboardContent.current = clipboardContent;
-          }
+          // Clear modal state (token already saved when modal opened)
           setIsAddModalOpen(false);
           setClipboardContent(null);
         }}
@@ -759,6 +1128,26 @@ export const HomeScreen: React.FC = () => {
         onClose={() => setContextMenuVisible(false)}
       />
 
+      <BottomMenu
+        visible={isBottomMenuVisible}
+        currentSortMode={sortMode}
+        onSortChange={handleSortModeChange}
+        onExport={handleExport}
+        onImport={handleImport}
+        onClose={() => setIsBottomMenuVisible(false)}
+      />
+
+      <AlertDialog
+        visible={checksumWarningVisible}
+        title="File may have been modified"
+        description="The integrity check failed. This file may have been edited outside of Nuggio. Do you still want to import?"
+        confirmText="Import"
+        cancelText="Cancel"
+        confirmVariant="destructive"
+        onConfirm={confirmChecksumImport}
+        onCancel={cancelChecksumImport}
+      />
+
       <Toast
         visible={toastVisible}
         message={toastMessage}
@@ -775,21 +1164,38 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
   },
   header: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
     borderBottomWidth: 0,
     backgroundColor: colors.background,
     paddingHorizontal: 20,
-    paddingVertical: 20,
+  },
+  headerLeft: {
+    flex: 1,
+  },
+  headerMenuButton: {
+    paddingTop: 8,
+    paddingLeft: 16,
   },
   headerTitle: {
     fontSize: 34,
     fontWeight: '700',
     color: colors.foreground,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     letterSpacing: 0.4,
+  },
+  headerScrolled: {
+    // paddingTop and paddingBottom controlled by inline styles
+  },
+  headerTitleScrolled: {
+    fontSize: 17,
   },
   resultsCounter: {
     fontSize: 14,
-    fontWeight: '500',
+    fontWeight: '400',
     color: colors.mutedForeground,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     marginTop: 4,
   },
   contentWrapper: {
@@ -830,6 +1236,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '400',
     color: colors.foreground,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     padding: 0,
     margin: 0,
     letterSpacing: 0.5,
@@ -844,12 +1251,6 @@ const styles = StyleSheet.create({
     backgroundColor: colors.mutedForeground,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  clearButtonText: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: colors.background,
-    lineHeight: 20,
   },
   grid: {
     paddingHorizontal: 16,
@@ -884,12 +1285,14 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: '600',
     color: colors.mutedForeground,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     marginBottom: 8,
   },
   emptyDescription: {
     fontSize: 17,
     fontWeight: '400',
     color: colors.mutedForeground,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     textAlign: 'center',
     marginBottom: 32,
   },
@@ -909,12 +1312,6 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 8,
   },
-  addButtonText: {
-    fontSize: 28,
-    fontWeight: '300',
-    color: '#FFFFFF',
-    marginTop: -2,
-  },
   fab: {
     width: 44,
     height: 44,
@@ -930,12 +1327,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 8,
-  },
-  fabIcon: {
-    fontSize: 28,
-    fontWeight: '300',
-    color: '#FFFFFF',
-    marginTop: -2,
   },
 });
 

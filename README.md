@@ -1,4 +1,4 @@
-# DataWallet - React Native
+# Nuggio - React Native
 
 A beautiful clipboard/data manager app refactored from React Web to React Native. Store and manage your important information like passport numbers, loyalty cards, and more in beautiful tiles with tap-to-copy functionality.
 
@@ -43,7 +43,7 @@ npm start
 ## Project Structure
 
 ```
-DataWallet/
+Nuggio/
 ├── src/
 │   ├── components/          # Reusable UI components
 │   │   ├── AlertDialog.tsx  # Alert dialog component
@@ -141,6 +141,9 @@ Private - All rights reserved
 ---
 
 Built with ❤️ using React Native and Expo
+
+
+
 
 
 

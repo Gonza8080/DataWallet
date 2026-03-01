@@ -1,5 +1,5 @@
-import React, { useEffect, useRef } from 'react';
-import { Animated, Text, StyleSheet, Dimensions } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Animated, Text, StyleSheet, Dimensions, Platform } from 'react-native';
 import { colors } from '../constants/colors';
 
 interface ToastProps {
@@ -19,9 +19,11 @@ export const Toast: React.FC<ToastProps> = ({
 }) => {
   const translateY = useRef(new Animated.Value(100)).current;
   const opacity = useRef(new Animated.Value(0)).current;
+  const [shouldRender, setShouldRender] = useState(false);
 
   useEffect(() => {
     if (visible) {
+      setShouldRender(true);
       // Slide up and fade in
       Animated.parallel([
         Animated.timing(translateY, {
@@ -51,6 +53,7 @@ export const Toast: React.FC<ToastProps> = ({
           }),
         ]).start(() => {
           onHide();
+          setShouldRender(false);
         });
       }, duration);
 
@@ -59,10 +62,11 @@ export const Toast: React.FC<ToastProps> = ({
       // Reset position
       translateY.setValue(100);
       opacity.setValue(0);
+      setShouldRender(false);
     }
   }, [visible, duration, onHide]);
 
-  if (!visible && translateY.__getValue() === 100) {
+  if (!shouldRender) {
     return null;
   }
 
@@ -78,8 +82,13 @@ export const Toast: React.FC<ToastProps> = ({
           opacity,
         },
       ]}
+      accessibilityRole="alert"
+      accessibilityLiveRegion="assertive"
+      accessible={true}
     >
-      <Text style={styles.message}>{message}</Text>
+      <Text style={styles.message} accessibilityLabel={message}>
+        {message}
+      </Text>
     </Animated.View>
   );
 };
@@ -106,8 +115,9 @@ const styles = StyleSheet.create({
   },
   message: {
     color: colors.foreground,
-    fontSize: 15,
-    fontWeight: '500',
+    fontSize: 14,
+    fontWeight: '400',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     textAlign: 'center',
   },
 });

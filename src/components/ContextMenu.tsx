@@ -6,7 +6,9 @@ import {
   TouchableOpacity,
   StyleSheet,
   Dimensions,
+  Platform,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../constants/colors';
 import type { Tile } from '../types/tile';
 
@@ -50,16 +52,18 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   }
 
   const menuOptions = [
-    { label: '✏️ Edit', action: onEdit },
+    { label: 'Edit', icon: 'create-outline', action: onEdit },
     {
-      label: tile.isPriority ? '⭐ Remove Priority' : '⭐ Set Priority',
+      label: tile.isPriority ? 'Unpin' : 'Pin',
+      icon: tile.isPriority ? 'star' : 'star-outline',
       action: onTogglePriority,
     },
     {
-      label: tile.isSecure ? '🔓 Unsecure' : '🔒 Secure',
+      label: tile.isSecure ? 'Unsecure' : 'Secure',
+      icon: tile.isSecure ? 'lock-open-outline' : 'lock-closed',
       action: onToggleSecure,
     },
-    { label: '🗑️ Delete', action: onDelete, destructive: true },
+    { label: 'Delete', icon: 'trash-outline', action: onDelete, destructive: true },
   ];
 
   return (
@@ -87,15 +91,38 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
                 option.action();
               }}
               activeOpacity={0.7}
+              accessible={true}
+              accessibilityRole="button"
+              accessibilityLabel={option.label}
+              accessibilityHint={
+                option.label === 'Edit' 
+            ? 'Tap to edit this nugget'
+            : option.label === 'Delete'
+            ? 'Tap to delete this nugget'
+            : option.label.includes('Pin')
+            ? `Tap to ${option.label.toLowerCase()} this nugget`
+            : option.label.includes('Secure')
+            ? `Tap to ${option.label.toLowerCase()} this nugget`
+                  : undefined
+              }
             >
-              <Text
-                style={[
-                  styles.menuText,
-                  option.destructive && styles.destructiveText,
-                ]}
-              >
-                {option.label}
-              </Text>
+              <View style={styles.menuItemContent}>
+                <Ionicons
+                  name={option.icon as any}
+                  size={20}
+                  color={option.destructive ? colors.destructive : colors.foreground}
+                  style={styles.menuIcon}
+                  accessibilityElementsHidden={true}
+                />
+                <Text
+                  style={[
+                    styles.menuText,
+                    option.destructive && styles.destructiveText,
+                  ]}
+                >
+                  {option.label}
+                </Text>
+              </View>
             </TouchableOpacity>
           ))}
         </View>
@@ -130,6 +157,13 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
+  menuItemContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  menuIcon: {
+    marginRight: 12,
+  },
   lastMenuItem: {
     borderBottomWidth: 0,
   },
@@ -140,6 +174,7 @@ const styles = StyleSheet.create({
     fontSize: 17,
     color: colors.foreground,
     fontWeight: '400',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     letterSpacing: 0.1,
   },
   destructiveText: {

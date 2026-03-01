@@ -4,6 +4,7 @@ import {
   View,
   StyleSheet,
   TextInputProps,
+  Platform,
 } from 'react-native';
 import { colors } from '../constants/colors';
 
@@ -22,6 +23,9 @@ export const MinimalistInput = forwardRef<TextInput, MinimalistInputProps>(
           placeholderTextColor={colors.mutedForeground}
           autoCorrect={false}
           spellCheck={false}
+          accessible={true}
+          accessibilityRole="none"
+          accessibilityLabel={props.placeholder || label}
           {...props}
         />
       </View>
@@ -34,16 +38,18 @@ const styles = StyleSheet.create({
     marginBottom: 0,
   },
   firstContainer: {
-    marginBottom: 20,
+    marginBottom: 1,
   },
   input: {
     fontSize: 22,
     fontWeight: '600',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     color: colors.foreground,
     backgroundColor: 'transparent',
     padding: 0,
     margin: 0,
     minHeight: 32,
+    textAlignVertical: 'top', // Align text to top instead of centering
   },
 });
 

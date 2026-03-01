@@ -32,7 +32,11 @@ export const Modal: React.FC<ModalProps> = ({ visible, onClose, children }) => {
       onPanResponderRelease: (evt, gestureState) => {
         if (gestureState.dy > 50) {
           // Dragged down more than 50px, close modal
-          onClose();
+          try {
+            onClose();
+          } catch (error) {
+            // Silently handle any errors during close
+          }
         }
       },
     })
@@ -46,28 +50,35 @@ export const Modal: React.FC<ModalProps> = ({ visible, onClose, children }) => {
       onRequestClose={onClose}
       presentationStyle="overFullScreen"
     >
-      <TouchableOpacity
-        style={styles.overlay}
-        activeOpacity={1}
-        onPress={onClose}
-      >
+      <View style={styles.overlay} pointerEvents="box-none">
+        <TouchableOpacity
+          style={styles.overlayTouchable}
+          activeOpacity={1}
+          onPress={onClose}
+          accessible={true}
+          accessibilityRole="button"
+          accessibilityLabel="Close modal"
+          accessibilityHint="Tap outside modal to close"
+        />
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'position' : 'height'}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.avoidingView}
-          keyboardVerticalOffset={Platform.OS === 'ios' ? -34 : 0}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
         >
-          <View style={styles.modalWrapper}>
+          <View style={styles.modalWrapper} pointerEvents="box-none">
             <TouchableOpacity 
               activeOpacity={1} 
               onPress={(e) => e.stopPropagation()}
+              style={styles.modalTouchable}
             >
-              <View style={styles.content}>
+              <View style={styles.content} pointerEvents="auto">
                 <View {...panResponder.panHandlers} style={styles.handleBarContainer}>
-                  <View style={styles.handleBar} />
+                  <View style={styles.handleBar} accessibilityRole="none" accessibilityLabel="Swipe down to close" />
                 </View>
                 <ScrollView
                   showsVerticalScrollIndicator={false}
-                  keyboardShouldPersistTaps="handled"
+                  keyboardShouldPersistTaps="always"
+                  keyboardDismissMode="none"
                   bounces={false}
                 >
                   {children}
@@ -76,7 +87,7 @@ export const Modal: React.FC<ModalProps> = ({ visible, onClose, children }) => {
             </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
-      </TouchableOpacity>
+      </View>
     </RNModal>
   );
 };
@@ -87,10 +98,16 @@ const styles = StyleSheet.create({
   },
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
     justifyContent: 'flex-end',
   },
+  overlayTouchable: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
   avoidingView: {
+    width: '100%',
+  },
+  modalTouchable: {
     width: '100%',
   },
   modalWrapper: {
@@ -121,7 +138,7 @@ const styles = StyleSheet.create({
   content: {
     backgroundColor: colors.card,
     paddingHorizontal: 24,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 40,
+    paddingBottom: Platform.OS === 'ios' ? 17 : 20,
     paddingTop: 0,
   },
 });
