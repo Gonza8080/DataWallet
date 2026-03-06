@@ -92,7 +92,8 @@ export const HomeScreen: React.FC = () => {
   const [isScrolled, setIsScrolled] = useState(false);
   const [contentHeight, setContentHeight] = useState(0);
   const [containerHeight, setContainerHeight] = useState(0);
-  const isScrollable = contentHeight > containerHeight;
+  const hasValidMeasurements = contentHeight > 100 && containerHeight > 100;
+  const isScrollable = hasValidMeasurements && contentHeight > containerHeight + 80;
   
   // Get safe area insets to ensure status bar visibility
   const insets = useSafeAreaInsets();
@@ -113,7 +114,10 @@ export const HomeScreen: React.FC = () => {
       if (a.isPriority && !b.isPriority) return -1;
       if (!a.isPriority && b.isPriority) return 1;
 
-      if (mode === 'alphabetical') {
+      if (mode === 'alphabetical_az') {
+        return b.name.localeCompare(a.name, undefined, { sensitivity: 'base' });
+      }
+      if (mode === 'alphabetical_za') {
         return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
       }
 
@@ -453,9 +457,15 @@ export const HomeScreen: React.FC = () => {
   const loadTilesFromStorage = useCallback(async () => {
     try {
       const savedSortMode = await loadSortMode();
-      const activeMode: SortMode = (savedSortMode === 'alphabetical' || savedSortMode === 'frequency')
-        ? savedSortMode
-        : 'frequency';
+      const activeMode: SortMode = (
+        savedSortMode === 'alphabetical_az' ||
+        savedSortMode === 'alphabetical_za' ||
+        savedSortMode === 'frequency'
+      )
+        ? (savedSortMode as SortMode)
+        : savedSortMode === 'alphabetical'
+          ? 'alphabetical_az'
+          : 'frequency';
       setSortMode(activeMode);
 
       let loadedTiles = await loadTiles();
@@ -1015,8 +1025,11 @@ export const HomeScreen: React.FC = () => {
                 return;
               }
               const offset = event.nativeEvent.contentOffset.y;
-              if (offset > 80 && !isScrolled) setIsScrolled(true);
-              else if (offset < 20 && isScrolled) setIsScrolled(false);
+              const maxScroll = contentHeight - containerHeight;
+              const isBouncing = offset < 0 || (maxScroll > 0 && offset > maxScroll + 5);
+              if (isBouncing) return;
+              if (offset > 100 && !isScrolled) setIsScrolled(true);
+              else if (offset < 15 && isScrolled) setIsScrolled(false);
             }}
             scrollEventThrottle={16}
             onContentSizeChange={(_, h) => setContentHeight(h)}
@@ -1092,7 +1105,6 @@ export const HomeScreen: React.FC = () => {
       <AddTileModal
         visible={isAddModalOpen && !editingTile}
         onClose={() => {
-          // Clear modal state (token already saved when modal opened)
           setIsAddModalOpen(false);
           setClipboardContent(null);
         }}

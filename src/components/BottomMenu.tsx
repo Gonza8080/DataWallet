@@ -12,7 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../constants/colors';
 
-export type SortMode = 'frequency' | 'alphabetical';
+export type SortMode = 'frequency' | 'alphabetical_az' | 'alphabetical_za';
 
 interface BottomMenuProps {
   visible: boolean;
@@ -138,7 +138,8 @@ export const BottomMenu: React.FC<BottomMenuProps> = ({
 
   const sortOptions: { mode: SortMode; label: string; icon: string }[] = [
     { mode: 'frequency', label: 'By frequency', icon: 'trending-up-outline' },
-    { mode: 'alphabetical', label: 'Alphabetically', icon: 'text-outline' },
+    { mode: 'alphabetical_az', label: 'Alphabetically (A→Z)', icon: 'text-outline' },
+    { mode: 'alphabetical_za', label: 'Alphabetically (Z→A)', icon: 'text-outline' },
   ];
 
   const renderSortMenu = () => (

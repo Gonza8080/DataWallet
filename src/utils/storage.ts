@@ -117,19 +117,17 @@ export const loadSortMode = async (): Promise<string | null> => {
 };
 
 const SAMPLE_TILES: Omit<Tile, 'id' | 'usageCount' | 'createdAt' | 'lastUsed'>[] = [
-  { name: 'Zoom Link', content: 'https://zoom.us/j/123456789', isPriority: false, isSecure: false },
-  { name: 'Linkedin', content: 'linkedin.com/in/johndoe', isPriority: false, isSecure: false },
-  { name: 'Passport No', content: 'AB 1234567', isPriority: true, isSecure: true },
-  { name: 'WiFi Home', content: 'SkyNet_5G / qwerty2024', isPriority: true, isSecure: false },
-  { name: 'Home Address', content: '221B Baker Street, London NW1 6XE', isPriority: false, isSecure: false },
-  { name: 'IBAN', content: 'DE89 3704 0044 0532 0130 00', isPriority: false, isSecure: true },
+  { name: '👉 Tap me to copy', content: 'This text is copied instantly.', isPriority: false, isSecure: false },
+  { name: '👁 Double tap to reveal', content: 'Content stays hidden until you need it.', isPriority: false, isSecure: false },
+  { name: '📌 Hold to prioritize', content: 'Prioritize important tiles to keep them at hand.', isPriority: false, isSecure: false },
+  { name: '🔒 Hold to secure', content: 'Mark sensitive information as secure and protect it.', isPriority: false, isSecure: false },
+  { name: '📷 Add from image', content: 'Import text from screenshots or photos using text recognition.', isPriority: false, isSecure: false },
+  { name: 'Zoom Meeting', content: 'https://zoom.us/j/123456789', isPriority: false, isSecure: false },
+  { name: 'Passport No', content: 'AB 1234567', isPriority: false, isSecure: false },
+  { name: 'IBAN', content: 'DE89 3704 0044 0532 0130 00', isPriority: false, isSecure: false },
   { name: 'Gym Membership', content: 'MBR-2024-08-5531', isPriority: false, isSecure: false },
-  { name: '⚡ No Hallucinations', content: 'Answer only based on provided context. If unsure, say "I don\'t know".', isPriority: false, isSecure: false },
-  { name: '⚡ Be Concise', content: 'Be extremely concise. No filler, no preamble. Get straight to the point.', isPriority: false, isSecure: false },
-  { name: '⚡ Step by Step', content: 'Think step by step. Show your reasoning before giving the final answer.', isPriority: false, isSecure: false },
-  { name: '⚡ No Sycophancy', content: 'Be direct and honest. Disagree with me if I\'m wrong. Don\'t flatter or sugarcoat.', isPriority: false, isSecure: false },
-  { name: '⚡ Honest Critic', content: 'Do not agree just to be polite. Challenge my ideas and point out flaws directly.', isPriority: false, isSecure: false },
-  { name: '⚡ Brutal Honesty', content: 'Skip the praise. If my idea is bad, say so and explain why. Be blunt.', isPriority: false, isSecure: false },
+  { name: 'LinkedIn Profile', content: 'linkedin.com/in/johndoe', isPriority: false, isSecure: false },
+  { name: 'Email Signature', content: 'Best regards,\nJohn Doe', isPriority: false, isSecure: false },
 ];
 
 export const loadSampleTilesIfFirstLaunch = async (): Promise<{ tiles: Tile[]; isFirstLaunch: boolean }> => {
@@ -144,12 +142,13 @@ export const loadSampleTilesIfFirstLaunch = async (): Promise<{ tiles: Tile[]; i
     }
 
     const now = Date.now();
+    const n = SAMPLE_TILES.length;
     const sampleTiles: Tile[] = SAMPLE_TILES.map((t, i) => ({
       ...t,
       id: `sample_${now}_${i}`,
       usageCount: 0,
-      createdAt: now - i,
-      lastUsed: now - i,
+      createdAt: now - (n - 1 - i),
+      lastUsed: now - (n - 1 - i),
     }));
 
     await AsyncStorage.setItem(FIRST_LAUNCH_KEY, '1');

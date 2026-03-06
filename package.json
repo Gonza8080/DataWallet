@@ -4,7 +4,6 @@
   "main": "index.js",
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web"
   },
@@ -18,6 +17,8 @@
     "expo-document-picker": "~14.0.8",
     "expo-file-system": "~19.0.21",
     "expo-haptics": "~15.0.8",
+    "expo-image-manipulator": "~14.0.8",
+    "expo-image-picker": "~17.0.10",
     "expo-local-authentication": "~17.0.8",
     "expo-secure-store": "~15.0.8",
     "expo-sharing": "~14.0.8",
